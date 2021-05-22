@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect } from "react";
 import AgoraRTC from "agora-rtc-sdk-ng";
 import * as bodyPix from "@tensorflow-models/body-pix";
 import * as tf from "@tensorflow/tfjs";
@@ -23,11 +23,6 @@ var options = {
 };
 
 const Index = () => {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-
-  const [net, setNet] = useState(null);
-
   useEffect(() => {
     // Initalize agora engine
     rtc.client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
@@ -41,117 +36,143 @@ const Index = () => {
         options.token,
         null
       );
-      localTrack(uid, net);
+      localTrack(uid);
     };
     joinChannel();
   }, []);
 
-  const drawBody = (personSegmentation, destCtx) => {
-    // destCtx.drawImage(
-    //     videoRef.current,
-    //     0,
-    //     0,
-    //     1000,
-    //     1000
-    //   );
-    // var imageData = destCtx.getImageData(0, 0, 1000,
-    //     1000);
-    // var pixel = imageData.data;
-    // for (var p = 0; p < pixel.length; p += 4) {
-    //   if (personSegmentation.data[p / 4] == 0) {
-    //     pixel[p + 3] = 0;
-    //   }
-    // }
-    // destCtx.imageSmoothingEnabled = true;
-    // destCtx.putImageData(imageData, 0, 0);
-  };
+  const drawBody = (video, segmentation) => {
+    const canvas = document.getElementById('canvas');
 
-  const virtual = async (video, net) => {
-    var canvas = document.querySelector("#canvas");
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
-    canvas.style.transform = "rotateY(180deg)";
+    video.width = canvas.width = video.videoWidth;
+    video.height = canvas.height = video.videoHeight;
+
+    const ctx = canvas.getContext('2d');
     canvas.style.backgroundImage = `url(${"https://helpx.adobe.com/content/dam/help/en/photoshop/using/convert-color-image-black-white/jcr_content/main-pars/before_and_after/image-before/Landscape-Color.jpg"})`;
     canvas.style.backgroundSize = "contain";
 
-    let destCtx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, 1000, 800);
+    var imageData= ctx.getImageData(0,0,1000, 800);
 
-    // to remove background, need another canvas
-
-    var canvasBg = document.querySelector("#bgCanvas");
-    canvasBg.width = 600;
-    canvasBg.height = 500;
-    const tempCtx = canvasBg.getContext("2d");
-
-    (async function loop() {
-      requestAnimationFrame(loop);
-
-      // create mask on temp canvas
-      const personSegmentation = await net.segmentPerson(video, {
-        flipHorizontal: false,
-        internalResolution: "low",
-        segmentationThreshold: 0.3,
-      });
-
-      const mask = bodyPix.toMask(personSegmentation);
-      tempCtx.putImageData(mask, 0, 0);
-
-      // draw original
-      destCtx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
-      // then overwrap, masked area will be removed
-      destCtx.save();
-      destCtx.globalCompositeOperation = "destination-out";
-
-      destCtx.drawImage(canvasBg, 0, 0, canvas.width, canvas.height);
-
-      destCtx.restore();
-
-      // drawBody(segmentation, destCtx)
-    })();
+    var pixel = imageData.data;
+    for (var p = 0; p<pixel.length; p+=4)
+    {
+        if (segmentation.data[p/4] == 0) {
+            pixel[p+3] = 0;
+        }
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.putImageData(imageData,0,0);
   };
 
-  const localTrack = async (uid, net) => {
+  const virtual = async() => {
+      const net = await bodyPix.load({
+        architecture: 'MobileNetV1',
+        outputStride: 16,
+        multiplier: 0.75,
+        quantBytes: 2
+      });
+
+      const videoData = document.getElementById(String(rtc.localVideoTrack?._player?.videoElement.attributes?.id?.value));
+      console.log("data", videoData)
+
+      const personSegmentation = await net.segmentPerson(videoData, {
+        flipHorizontal: false,
+        internalResolution: 'medium',
+        segmentationThreshold: 0.7
+      });
+      console.log("personSegmentation",personSegmentation)
+      if(personSegmentation!=null){
+        drawBody(videoData, personSegmentation);
+      }
+  };
+
+  const localTrack = async (uid) => {
     rtc.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
 
     // rtc.localVideoTrack = await AgoraRTC.createCameraVideoTrack();
 
-    const videoMediaStreamTrack = await navigator.mediaDevices
+    rtc.localVideoTrack = await navigator.mediaDevices
       .getUserMedia({ video: true, audio: false })
       .then((mediaStream) => {
-        videoRef.current.srcObject = mediaStream;
-        videoRef.current.onloadeddata = () => {
-          if (net == null) {
-            bodyPix
-              .load({
-                architecture: "MobileNetV1",
-                outputStride: 16,
-                multiplier: 0.75,
-                quantBytes: 2,
-              })
-              .catch((error) => {
-                console.log(error);
-              })
-              .then((objNet) => {
-                setNet(objNet);
-                virtual(videoRef.current, objNet);
-              });
-          }
-        };
-        return canvasRef.current.captureStream(10).getVideoTracks()[0];
-      })
-      .catch((error) => {
-        console.log(error);
+        const videoMediaStreamTrack = mediaStream.getVideoTracks()[0];
+        return AgoraRTC.createCustomVideoTrack({
+          mediaStreamTrack: videoMediaStreamTrack,
+        });
       });
 
-    console.log("videoRef", videoRef.current.srcObject.getVideoTracks()[0]);
-    rtc.localVideoTrack = AgoraRTC.createCustomVideoTrack({
-      mediaStreamTrack: videoMediaStreamTrack,
-    });
+    const videoSection = document.querySelector("#videoSection");
+    const section = document.createElement("section");
 
-    console.log("rtc.localVideoTrack", rtc.localVideoTrack);
+    section.id = uid;
+    section.style.width = "100%";
+    section.style.height = "100%";
+    section.style.position = "absolute";
+
+    videoSection.append(section);
+
+    // videoSection.append(section);
+    rtc.localVideoTrack.play(section);
+
+    // detecting parent of video
+    const videoParent = document.getElementById(String(rtc.localVideoTrack?._player?.container?.id));
+    const videoData = document.getElementById(String(rtc.localVideoTrack?._player?.videoElement.attributes?.id?.value));
+    videoData.style.display = 'none';
+    let videoCanvas = document.createElement('canvas');
+    videoCanvas.id = "videoCanvas";
+    videoCanvas.style.width = '100%';
+    videoCanvas.style.height = '100%';
+    videoCanvas.style.transform = 'rotateY(180deg)';
+    videoCanvas.style.backgroundImage = `url(${"https://helpx.adobe.com/content/dam/help/en/photoshop/using/convert-color-image-black-white/jcr_content/main-pars/before_and_after/image-before/Landscape-Color.jpg"})`;
+    videoCanvas.style.backgroundSize = "contain";
+    const ctx = videoCanvas.getContext("2d");
+
+    videoParent.append(videoCanvas);
+
+    // Create another canvas to remove background
+    let bgCanvas = document.createElement('canvas');
+    bgCanvas.id = "bgCanvas";
+    bgCanvas.style.width = '100%';
+    bgCanvas.style.height = '100%';
+    bgCanvas.style.transform = 'rotateY(180deg)';
+    const bgCtx = bgCanvas.getContext("2d");
+
+    videoParent.append(bgCanvas);
+
+    videoData.addEventListener('play', () => {
+      async function step() {
+        
+        const net = await bodyPix.load({
+          architecture: 'MobileNetV1',
+          outputStride: 16,
+          multiplier: 0.75,
+          quantBytes: 2
+        });
+
+        const personSegmentation = await net.segmentPerson(videoData, {
+          flipHorizontal: false,
+          internalResolution: 'medium',
+          segmentationThreshold: 0.7
+        });
+
+        if(personSegmentation!=null){
+          const mask = bodyPix.toMask(personSegmentation);
+          bgCtx.putImageData(mask, 0, 0);
+        }
+        ctx.drawImage(videoData, 0, 0, videoCanvas.width, videoCanvas.height)
+        ctx.save();
+        ctx.globalCompositeOperation = "destination-out";
+
+        ctx.drawImage(bgCanvas, 0, 0, videoCanvas.width, videoCanvas.height)
+
+        ctx.restore();
+
+        requestAnimationFrame(step)
+      }
+      requestAnimationFrame(step);
+    })
+
+    // virtual();
 
     await rtc.client.publish([rtc.localAudioTrack, rtc.localVideoTrack]);
     console.log("publish success!");
@@ -218,32 +239,8 @@ const Index = () => {
   };
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <video
-        id="bodyCam"
-        ref={videoRef}
-        autoPlay
-        style={{ display: "none", width: "100%", height: "100%" }}
-      ></video>
-      <canvas width={1000} height={800} id="canvas" ref={canvasRef}></canvas>
-
-      <canvas id="bgCanvas" style={{position: 'absolute', left:'0px', right: '0px', zIndex: '-1', width: '0px', height: '0px'}}></canvas>
-      {/* <button
-        style={{
-          position: "absolute",
-          top: "20px",
-          left: "50%",
-          background: "red",
-          color: "#000",
-          padding: "6px 12px",
-          zIndex: "100",
-        }}
-        onClick={() => VirtualBackground()}
-      >
-        Virtual
-      </button> */}
-
-      {/* <button
+    <>
+      <button
         style={{
           position: "absolute",
           top: "20px",
@@ -256,8 +253,15 @@ const Index = () => {
         onClick={() => triggerLeaveCall()}
       >
         Leave call
-      </button> */}
-    </div>
+      </button>
+      <div
+        id="videoSection"
+        style={{
+          width: "100%",
+          height: "100%",
+        }}
+      ></div>
+    </>
   );
 };
 
